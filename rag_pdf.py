@@ -20,17 +20,17 @@ import numpy as np
 import ollama
 
 # ── Config ───────────────────────────────────────────────────────────────────
-EMBED_MODEL = "nomic-embed-text"   # NOTE: v1 is English-centric; our data is
+EMBED_MODEL = "nomic-embed-text-v2-moe"   # NOTE: v1 is English-centric; our data is
                                    # Dutch. Good enough to learn; for real
                                    # quality consider 'nomic-embed-text-v2-moe'.
 CHAT_MODEL  = "llama3.2"            # set explicitly (don't let it drift to llama3)
-TOP_K       = 3
+TOP_K       = 8
 
 # Point this at a single .json file OR a folder full of them.
-DATA_PATH   = r"C:\Users\marbos\Downloads\1325000543.json"
+DATA_PATH   = r"C:\Users\marbos\Downloads\selected_products"
 
 # A Dutch query, because the product data is Dutch. Try changing it.
-QUERY = "Is dit tapijt geschikt voor gebruik op de trap?"
+QUERY = "Welke vloer is waterbestendig en geschikt voor de badkamer?"
 
 # ── The curation decision (this is the important part) ───────────────────────
 # A product JSON has ~100 fields. Most are ERP plumbing (cost_center_code,

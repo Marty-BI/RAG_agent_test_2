@@ -24,8 +24,19 @@ import chromadb
 
 # ── Config ────────────────────────────────────────────────────────────────────
 EMBED_MODEL  = "nomic-embed-text-v2-moe"
-CHAT_MODEL   = "llama3.2"
-TOP_K        = 8
+
+# Switch between "llama3.2:1b" (fast, ~1 GB) and "llama3.2" (3B, slower but
+# more capable).  Pull the smaller model first with: ollama pull llama3.2:1b
+CHAT_MODEL   = "llama3.2:1b"
+
+TOP_K        = 8   # how many results to RETRIEVE and display for inspection
+
+# Only the top TOP_K_GENERATE products are sent to the model as context.
+# Retrieving more than you generate with lets you inspect the full ranking
+# without paying the token cost of feeding every result to the LLM.
+# Fewer context products = smaller prompt = faster generation.
+TOP_K_GENERATE = 3
+
 DATA_PATH    = r"C:\Users\marbos\Downloads\selected_products"
 CHROMA_DIR   = "./chroma_db"        # folder Chroma creates / reads on disk
 COLLECTION   = "cotap_products"     # logical name; Chroma supports many collections
@@ -248,11 +259,16 @@ def main():
     print()
 
     # ── Phase 4: grounded, cited generation ──────────────────────────────────
+    # Slice to the top TOP_K_GENERATE passages only.  The full TOP_K ranking is
+    # already printed above for inspection; here we deliberately send fewer
+    # tokens to the model to keep the prompt short and generation fast.
+    gen_documents = documents[:TOP_K_GENERATE]
+
     # Context passages are in the order Chroma returned them (most similar first).
     # We label them [Product 1], [Product 2], … and tell the model that lower
     # numbers are more relevant, so it can weight them accordingly.
     context = "\n\n".join(
-        f"[Product {i+1}]\n{doc}" for i, doc in enumerate(documents)
+        f"[Product {i+1}]\n{doc}" for i, doc in enumerate(gen_documents)
     )
 
     # WHY this prompt structure:
@@ -275,10 +291,11 @@ Instructies — lees deze zorgvuldig voordat je antwoordt:
    Gebruik dit formaat: (bron: <Productnaam>, art. <Artikelnummer>, veld '<Veldnaam>: <waarde>')
    Voorbeeld: (bron: Expression Aqua zand, art. EXP-001, veld 'Geschikt voor (ruimte): badkamer')
 3. De passages zijn gerangschikt op relevantie: [Product 1] is het meest relevant
-   voor de vraag, [Product {TOP_K}] het minst. Geef voorrang aan vroegere passages.
+   voor de vraag, [Product {TOP_K_GENERATE}] het minst. Geef voorrang aan vroegere passages.
 4. Als GEEN van de producten duidelijk voldoet aan de vraag, antwoord dan
    letterlijk met: "Geen van de gevonden producten voldoet duidelijk aan deze vraag."
    Doe geen gissingen en verzin geen producteigenschappen.
+5. Geef je antwoord in maximaal 2 zinnen, in het Nederlands.
 
 Productpassages:
 
@@ -286,14 +303,19 @@ Productpassages:
 
 Vraag: {QUERY}""".strip()
 
-    # CHANGE 1 — temperature=0: every token is chosen deterministically (the
-    # highest-probability token is always picked, no randomness).  The same
-    # prompt will now produce the same answer every run, which makes the output
-    # testable and comparable across query changes.
+    # temperature=0  — deterministic: same prompt always gives same output.
+    # num_predict=200 — hard cap on tokens generated; stops runaway responses
+    #                   and keeps generation fast.  200 tokens ≈ 2–3 sentences.
+    # keep_alive="10m" — tells Ollama to keep the model loaded in GPU/CPU RAM
+    #                    for 10 minutes after this call.  Without it, Ollama
+    #                    unloads the model immediately, so the NEXT run pays the
+    #                    full load time again (~30–60 s for 3B).  With it, a
+    #                    second run within 10 minutes skips the load entirely.
     rag = ollama.chat(
         model=CHAT_MODEL,
         messages=[{"role": "user", "content": prompt}],
-        options={"temperature": 0},
+        options={"temperature": 0, "num_predict": 200},
+        keep_alive="10m",
     )
 
     t4 = time.perf_counter()
@@ -307,12 +329,27 @@ Vraag: {QUERY}""".strip()
     # We measure wall-clock time, so network latency to the local Ollama daemon
     # is included in the embed and generate phases — that's intentional, since
     # it reflects the real cost of each step.
+
+    # Ollama returns generation stats in the response when available.
+    # eval_count    = number of tokens the model generated
+    # eval_duration = time spent generating, in nanoseconds
+    # Dividing gives tokens/second — the standard way to benchmark LLM speed.
+    # Both fields may be absent if Ollama hit an error, so we guard with .get().
+    eval_count    = rag.get("eval_count")
+    eval_duration = rag.get("eval_duration")
+    if eval_count and eval_duration and eval_duration > 0:
+        tokens_per_sec = eval_count / (eval_duration / 1e9)
+        tps_line = f"  Tokens/sec    : {tokens_per_sec:6.1f}  ({eval_count} tokens)"
+    else:
+        tps_line = "  Tokens/sec    : n/a"
+
     print()
     print("── Timing breakdown ─────────────────────────────────")
     print(f"  Load + sync   : {t1 - t0:6.2f} s")
     print(f"  Embed query   : {t2 - t1:6.2f} s")
     print(f"  Chroma lookup : {t3 - t2:6.2f} s")
     print(f"  Generate      : {t4 - t3:6.2f} s")
+    print(tps_line)
     print(f"  ─────────────────────────────")
     print(f"  Total         : {t4 - t0:6.2f} s")
 
